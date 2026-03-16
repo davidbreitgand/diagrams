@@ -1,0 +1,134 @@
+@startuml LLMCascade
+' PlantUML Diagram
+' Edit this file to create your diagram
+
+' High-quality settings optimized for Google Docs
+' Balance between resolution and size to prevent cutoff
+skinparam dpi 400
+skinparam defaultFontSize 14
+skinparam titleFontSize 18
+skinparam participantFontSize 16
+skinparam sequenceMessageAlign center
+skinparam noteFontSize 12
+skinparam noteTextAlignment left
+
+' Compact layout to fit page width
+skinparam ParticipantPadding 20
+skinparam BoxPadding 5
+skinparam SequenceMessageAlign center
+
+' Prevent diagram cutoff
+scale 0.4
+
+title LLM Cascade
+
+participant "Client" as client
+participant "Envoy" as envoy
+participant "ext_proc server" as ext_proc
+participant "Reflector" as reflector
+participant "EPP Cascade-X" as epp_cx
+participant "EPP Cascade-Y" as epp_cy
+participant "Backend X" as backend_x
+participant "Backend Y" as backend_y
+
+activate envoy
+note over client,envoy
+  **TX1 -- Transaction 1 (original request by the client)**
+end note
+client -> envoy: 1. POST MaaS-URL "model":"Cascade" "stream":true
+envoy -> ext_proc: 2. [gRPC, no X-LLMCascade-Retry-Request sentinel header, TX1]
+activate ext_proc
+note over ext_proc
+  **BBR LLMCascadeRequesPlugin [request path]**
+  1. model:X // defined in Cascade={X,Y}
+  2. logprobs:true
+  3. hdr X-Gateway-Base-Model-Name:X
+  4. clearRouteCache()
+end note
+ext_proc -> envoy: 3. HeadersResponse + BodyResponse [mutated]
+envoy -> epp_cx: 4. upstream HTTP model:X logprobs:true stream:true
+activate epp_cx
+epp_cx -> backend_x: 5. model:X logprobs:true stream:true
+activate backend_x
+backend_x -> epp_cx: 6. SSE stream {delta, logprobs} [chunks...]
+epp_cx -> envoy: 7. SSE stream {delta, logprobs} [chunks...]
+envoy -> ext_proc: 8. response body [per chunk, gRPC]
+note over ext_proc
+  **BBR LLMCascadeResponsePlugin [response path]**
+  1. accumulate logprobs per chunk
+  2. buffer chunks -- withhold CONTINUE
+end note 
+backend_x -> epp_cx: 9. end_of_stream=true [last chunk]
+deactivate backend_x
+epp_cx -> envoy: 10. end_of_stream=true [last chunk]
+deactivate epp_cx
+envoy -> ext_proc: 11. response body end_of_stream=true
+note over ext_proc
+  **BBR LLMCascadeResponsePlugin [response path]**
+  confidence = f(accumulated_logprobs) // summation
+end note
+
+alt confidence >= threshold // the threshold is pre-configured via plugin configuration
+  note over ext_proc
+    **High confidence path**
+    Return buffered response to client
+  end note
+  ext_proc -> envoy: 12. body response CONTINUE [release buffered chunks]
+  envoy -> client: 13. SSE stream [all buffered chunks] // the client request was served by the cheap model
+else confidence < threshold
+  note over ext_proc
+    **BBR LLMCascadeResponsePlugin: [response path]**
+	Low confidence - retry with model Y
+    1. Discard the buffered response 
+    2. header X-LLMCascade-Retry-Request:true // set sentinel header
+	3. header X-Gateway-Base-Model-Name:Y 
+    3. model:Y // set the fallback model of the cascade (expensive path)
+  end note
+  ext_proc -> reflector: 14. HTTP POST model:Y X-LLMCascade-Retry-Request:true
+  activate reflector
+  note over envoy,ext_proc
+    **TX2 -- Transaction 2 (Reflector acts as new Envoy downstream client)**
+  end note
+  note over reflector
+    **Reflector acts as simple HTTP Proxy**
+ Passes request verbatim
+  end note
+  reflector -> envoy: 15. POST MaaS URL X-LLMCascade-Retry-Request:true X-Gateway-Base-Model-Name:Y model:Y
+  envoy -> ext_proc: 16. request headers/body [gRPC, TX2]
+  note over ext_proc
+    **BBR LLMCascadeRequestPlugin [request path]**
+   1. X-LLMCascade-Retry-Request detected
+   2. clearRouteCache() -> resolves cluster:Y
+  end note
+end
+  ext_proc -> envoy: 17. HeaderResponse pass-through + clearRouteCache
+  envoy -> epp_cy: 18. upstream HTTP model:Y X-LLMCascade-Retry-Request:true
+  activate epp_cy
+  epp_cy -> backend_y: 19. model:Y stream:true // don't care about logprobs of Y
+  activate backend_y
+  backend_y -> epp_cy: 20. SSE stream [all chunks + end_of_stream]
+  deactivate backend_y
+  epp_cy -> envoy: 21. SSE stream [all chunks + end_of_stream]
+  deactivate epp_cy
+  envoy -> ext_proc: 22. response body chunks [gRPC, TX2]
+  note over ext_proc
+    **BBR LLMCascadeResponsePlugin [response path]**
+ 1. X-LLMCascade-Retry-Request detected -> skip confidence level computations
+ 2. buffer all Y response chunks
+  end note
+  ext_proc -> envoy: 23. BodyResponse CONTINUE [TX2]
+  envoy -> reflector: 24. SSE response [model Y response chunks, TX2 downstream]
+  reflector -> ext_proc: 25. HTTP response [model Y response chunks]
+  deactivate reflector
+  note over client,envoy
+    **TX1 resumes -- ext_proc replaces response body with LLM Y chunks**
+  end note
+  note over ext_proc
+    **replace response body with LLM Y chunks**
+ issue CONTINUE_AND_REPLACE -> resume Envoy TX1
+  end note
+  ext_proc -> envoy: 26. BodyResponse CONTINUE_AND_REPLACE [model Y response body]
+  deactivate ext_proc
+  envoy -> client: 27. SSE response [model Y response] unconditionally
+  deactivate envoy
+@enduml
