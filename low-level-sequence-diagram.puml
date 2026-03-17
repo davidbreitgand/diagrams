@@ -26,8 +26,8 @@ participant "Client" as client
 participant "Envoy" as envoy
 participant "ext_proc server" as ext_proc
 participant "Reflector" as reflector
-participant "EPP Cascade-X" as epp_cx
-participant "EPP Cascade-Y" as epp_cy
+participant "EPP X" as epp_cx
+participant "EPP Y" as epp_cy
 participant "Backend X" as backend_x
 participant "Backend Y" as backend_y
 
