@@ -25,7 +25,6 @@ title LLM Cascade
 participant "Client" as client
 participant "Envoy" as envoy
 participant "ext_proc server" as ext_proc
-participant "Reflector" as reflector
 participant "EPP X" as epp_cx
 participant "EPP Y" as epp_cy
 participant "Backend X" as backend_x
@@ -79,47 +78,41 @@ else confidence < threshold
   note over ext_proc
     **BBR LLMCascadeResponsePlugin: [response path]**
 	Low confidence - retry with model Y
-    1. Discard the buffered response 
+    1. Discard the buffered response
     2. header X-LLMCascade-Retry-Request:true // set sentinel header
-	3. header X-Gateway-Base-Model-Name:Y 
-    3. model:Y // set the fallback model of the cascade (expensive path)
+	3. header X-Gateway-Base-Model-Name:Y
+    4. model:Y // set the fallback model of the cascade (expensive path)
+    5. HTTP POST directly to Envoy to retry
   end note
-  ext_proc -> reflector: 14. HTTP POST model:Y X-LLMCascade-Retry-Request:true
-  activate reflector
   note over envoy,ext_proc
-    **TX2 -- Transaction 2 (Reflector acts as new Envoy downstream client)**
+    **TX2 -- Transaction 2 (ext_proc acts as new Envoy downstream client)**
   end note
-  note over reflector
-    **Reflector acts as simple HTTP Proxy**
- Passes request verbatim
-  end note
-  reflector -> envoy: 15. POST MaaS URL X-LLMCascade-Retry-Request:true X-Gateway-Base-Model-Name:Y model:Y
-  envoy -> ext_proc: 16. request headers/body [gRPC, TX2]
+  ext_proc -> envoy: 14. HTTP POST MaaS URL X-LLMCascade-Retry-Request:true X-Gateway-Base-Model-Name:Y model:Y
+  envoy -> ext_proc: 15. request headers/body [gRPC, TX2]
   note over ext_proc
     **BBR LLMCascadeRequestPlugin [request path]**
    1. X-LLMCascade-Retry-Request detected
    2. clearRouteCache() -> resolves cluster:Y
   end note
 end
-  ext_proc -> envoy: 17. HeaderResponse pass-through + clearRouteCache
-  envoy -> epp_cy: 18. upstream HTTP model:Y X-LLMCascade-Retry-Request:true
+  ext_proc -> envoy: 16. HeaderResponse pass-through + clearRouteCache
+  envoy -> epp_cy: 17. upstream HTTP model:Y X-LLMCascade-Retry-Request:true
   activate epp_cy
-  epp_cy -> backend_y: 19. model:Y stream:true // don't care about logprobs of Y
+  epp_cy -> backend_y: 18. model:Y stream:true // don't care about logprobs of Y
   activate backend_y
-  backend_y -> epp_cy: 20. SSE stream [all chunks + end_of_stream]
+  backend_y -> epp_cy: 19. SSE stream [all chunks + end_of_stream]
   deactivate backend_y
-  epp_cy -> envoy: 21. SSE stream [all chunks + end_of_stream]
+  epp_cy -> envoy: 20. SSE stream [all chunks + end_of_stream]
   deactivate epp_cy
-  envoy -> ext_proc: 22. response body chunks [gRPC, TX2]
+  envoy -> ext_proc: 21. response body chunks [gRPC, TX2]
   note over ext_proc
     **BBR LLMCascadeResponsePlugin [response path]**
  1. X-LLMCascade-Retry-Request detected -> skip confidence level computations
  2. buffer all Y response chunks
+ 3. receive HTTP response from Envoy (TX2 downstream)
   end note
-  ext_proc -> envoy: 23. BodyResponse CONTINUE [TX2]
-  envoy -> reflector: 24. SSE response [model Y response chunks, TX2 downstream]
-  reflector -> ext_proc: 25. HTTP response [model Y response chunks]
-  deactivate reflector
+  ext_proc -> envoy: 22. BodyResponse CONTINUE [TX2]
+  envoy -> ext_proc: 23. HTTP response [model Y response chunks, TX2 downstream]
   note over client,envoy
     **TX1 resumes -- ext_proc replaces response body with LLM Y chunks**
   end note
@@ -127,8 +120,8 @@ end
     **replace response body with LLM Y chunks**
  issue CONTINUE_AND_REPLACE -> resume Envoy TX1
   end note
-  ext_proc -> envoy: 26. BodyResponse CONTINUE_AND_REPLACE [model Y response body]
+  ext_proc -> envoy: 24. BodyResponse CONTINUE_AND_REPLACE [model Y response body]
   deactivate ext_proc
-  envoy -> client: 27. SSE response [model Y response] unconditionally
+  envoy -> client: 25. SSE response [model Y response] unconditionally
   deactivate envoy
 @enduml
