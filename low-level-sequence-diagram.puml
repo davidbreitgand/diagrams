@@ -27,8 +27,6 @@ participant "Envoy" as envoy
 participant "ext_proc server" as ext_proc
 participant "EPP X" as epp_cx
 participant "EPP Y" as epp_cy
-participant "Backend X" as backend_x
-participant "Backend Y" as backend_y
 
 activate envoy
 note over client,envoy
@@ -47,9 +45,6 @@ end note
 ext_proc -> envoy: 3. HeadersResponse + BodyResponse [mutated]
 envoy -> epp_cx: 4. upstream HTTP model:X logprobs:true stream:true
 activate epp_cx
-epp_cx -> backend_x: 5. model:X logprobs:true stream:true
-activate backend_x
-backend_x -> epp_cx: 6. SSE stream {delta, logprobs} [chunks...]
 epp_cx -> envoy: 7. SSE stream {delta, logprobs} [chunks...]
 envoy -> ext_proc: 8. response body [per chunk, gRPC]
 note over ext_proc
@@ -57,14 +52,12 @@ note over ext_proc
   1. accumulate logprobs per chunk
   2. buffer chunks -- withhold CONTINUE
 end note 
-backend_x -> epp_cx: 9. end_of_stream=true [last chunk]
-deactivate backend_x
 epp_cx -> envoy: 10. end_of_stream=true [last chunk]
 deactivate epp_cx
 envoy -> ext_proc: 11. response body end_of_stream=true
 note over ext_proc
   **BBR LLMCascadeResponsePlugin [response path]**
-  confidence = f(accumulated_logprobs) // summation
+  confidence = f(accumulated_logprobs) 
 end note
 
 alt confidence >= threshold // the threshold is pre-configured via plugin configuration
@@ -98,10 +91,6 @@ end
   ext_proc -> envoy: 16. HeaderResponse pass-through + clearRouteCache
   envoy -> epp_cy: 17. upstream HTTP model:Y X-LLMCascade-Retry-Request:true
   activate epp_cy
-  epp_cy -> backend_y: 18. model:Y stream:true // don't care about logprobs of Y
-  activate backend_y
-  backend_y -> epp_cy: 19. SSE stream [all chunks + end_of_stream]
-  deactivate backend_y
   epp_cy -> envoy: 20. SSE stream [all chunks + end_of_stream]
   deactivate epp_cy
   envoy -> ext_proc: 21. response body chunks [gRPC, TX2]
