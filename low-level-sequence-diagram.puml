@@ -57,7 +57,7 @@ deactivate epp_cx
 envoy -> ext_proc: 11. response body end_of_stream=true
 note over ext_proc
   **BBR LLMCascadeResponsePlugin [response path]**
-  confidence = f(accumulated_logprobs) // summation
+  confidence = f(accumulated_logprobs) 
 end note
 
 alt confidence >= threshold // the threshold is pre-configured via plugin configuration
