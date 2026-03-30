@@ -93,24 +93,18 @@ end
   activate epp_cy
   epp_cy -> envoy: 15. SSE stream [all chunks + end_of_stream]
   deactivate epp_cy
-  envoy -> ext_proc: 16. response body chunks [gRPC, TX2]
+  envoy -> ext_proc: 16. response body chunks + end_of_stream [gRPC, TX2]
   note over ext_proc
     **BBR LLMCascadeResponsePlugin [response path]**
  1. X-LLMCascade-Retry-Request detected -> skip confidence level computations
- 2. buffer all Y response chunks
- 3. receive HTTP response from Envoy (TX2 downstream)
+ 2. Receive HTTP response from Envoy (TX2 downstream)
+ 3. Replace response body with LLM Y chunks (HTTP Response)
   end note
-  ext_proc -> envoy: 17. BodyResponse CONTINUE [TX2]
-  envoy -> ext_proc: 18. HTTP response [model Y response chunks, TX2 downstream]
   note over client,envoy
     **TX1 resumes -- ext_proc replaces response body with LLM Y chunks**
   end note
-  note over ext_proc
-    **replace response body with LLM Y chunks**
- issue CONTINUE_AND_REPLACE -> resume Envoy TX1
-  end note
-  ext_proc -> envoy: 19. BodyResponse CONTINUE_AND_REPLACE [model Y response body]
+  ext_proc -> envoy: 17. BodyResponse CONTINUE_AND_REPLACE [model Y response body]
   deactivate ext_proc
-  envoy -> client: 20. SSE response [model Y response] unconditionally
+  envoy -> client: 18. SSE response [model Y response] unconditionally
   deactivate envoy
 @enduml
