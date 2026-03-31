@@ -40,9 +40,8 @@ note over ext_proc
   1. model:X // defined in Cascade={X,Y}
   2. logprobs:true
   3. hdr X-Gateway-Base-Model-Name:X
-  4. clearRouteCache()
 end note
-ext_proc -> envoy: 3. HeadersResponse + BodyResponse [mutated]
+ext_proc -> envoy: 3. HeadersResponse + BodyResponse [mutated] + clearRouteCache
 envoy -> epp_cx: 4. upstream HTTP model:X logprobs:true stream:true
 activate epp_cx
 epp_cx -> envoy: 5. SSE stream {delta, logprobs} [chunks...]
@@ -57,20 +56,20 @@ deactivate epp_cx
 envoy -> ext_proc: 8. response body end_of_stream=true
 note over ext_proc
   **BBR LLMCascadeResponsePlugin [response path]**
-  confidence = f(accumulated_logprobs) 
+  quality = f(accumulated_logprobs) 
 end note
 
-alt confidence >= threshold // the threshold is pre-configured via plugin configuration
+alt quality >= threshold // the threshold is pre-configured via plugin configuration
   note over ext_proc
-    **High confidence path**
+    **High quality path**
     Return buffered response to client
   end note
   ext_proc -> envoy: 9. body response CONTINUE [release buffered chunks]
   envoy -> client: 10. SSE stream [all buffered chunks] // the client request was served by the cheap model
-else confidence < threshold
+else quality < threshold
   note over ext_proc
     **BBR LLMCascadeResponsePlugin: [response path]**
-	Low confidence - retry with model Y
+	Low quality - retry with model Y
     1. Discard the buffered response
     2. header X-LLMCascade-Retry-Request:true // set sentinel header
 	3. header X-Gateway-Base-Model-Name:Y
@@ -85,7 +84,8 @@ else confidence < threshold
   note over ext_proc
     **BBR LLMCascadeRequestPlugin [request path]**
    1. X-LLMCascade-Retry-Request detected
-   2. clearRouteCache() -> resolves cluster:Y
+   2. Skip model body field mutation, logprobs setting, and header setting
+   3. Return body and headers as-is
   end note
 end
   ext_proc -> envoy: 13. HeaderResponse pass-through + clearRouteCache
@@ -96,7 +96,7 @@ end
   envoy -> ext_proc: 16. response body chunks + end_of_stream [gRPC, TX2]
   note over ext_proc
     **BBR LLMCascadeResponsePlugin [response path]**
- 1. X-LLMCascade-Retry-Request detected -> skip confidence level computations
+ 1. X-LLMCascade-Retry-Request detected -> skip quality level computations
  2. Receive HTTP response from Envoy (TX2 downstream)
  3. Replace response body with LLM Y chunks (HTTP Response)
   end note
